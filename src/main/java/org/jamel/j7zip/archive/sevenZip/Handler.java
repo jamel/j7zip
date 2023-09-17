@@ -1,6 +1,10 @@
 package org.jamel.j7zip.archive.sevenZip;
 
 import java.io.IOException;
+import java.util.Collections;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import org.jamel.j7zip.common.ObjectVector;
 import org.jamel.j7zip.archive.IArchiveExtractCallback;
@@ -12,6 +16,7 @@ import org.jamel.j7zip.Result;
 public class Handler implements IInArchive {
 
     private final ArchiveDatabaseEx database;
+    private Supplier<IInStream> streamSupplier;
     private IInStream inStream;
 
 
@@ -37,6 +42,111 @@ public class Handler implements IInArchive {
         inStream = stream;
         return Result.OK;
     }
+
+
+    public Result open( Supplier<IInStream> stream )
+    {
+        streamSupplier = stream;
+        try ( var srcStream = streamSupplier.get() )
+        {
+            return open( srcStream, kMaxCheckStartPosition );
+        }
+        catch ( IOException IO ) { IO.printStackTrace(); }
+        return Result.ERROR_FAIL;
+    }
+
+
+    public Result extract( Supplier<IArchiveExtractCallback> extractCallbackSpec )
+    {
+        var exec = Executors.newFixedThreadPool( 4 );
+
+        for ( ExtractFolderInfo efi : extractFolderInfo() )
+        {
+            if ( efi.UnPackSize > 0 ) exec.execute
+            (
+                () -> extract( efi, extractCallbackSpec.get() )
+            );
+        }
+
+        try { exec.shutdown();  exec.awaitTermination( 30, TimeUnit.SECONDS ); }
+        catch ( InterruptedException IE ) { IE.printStackTrace(); }
+
+        return Result.OK;
+    }
+
+
+    private ObjectVector<ExtractFolderInfo> extractFolderInfo()
+    {
+        var extractFolderInfoVector = new ObjectVector<ExtractFolderInfo>();
+
+        for ( int ref2Index = 0; ref2Index < database.files.size(); ref2Index++ )
+        {
+            int folderIndex = database.FileIndexToFolderIndexMap.get( ref2Index );
+
+            if ( folderIndex == InArchive.kNumNoIndex )
+            {
+                extractFolderInfoVector.add( new ExtractFolderInfo( ref2Index, folderIndex ) );
+                continue;
+            }
+
+            if ( extractFolderInfoVector.isEmpty() || folderIndex != extractFolderInfoVector.last().FolderIndex ) try
+            {
+                var efi = new ExtractFolderInfo( InArchive.kNumNoIndex, folderIndex );
+                efi.UnPackSize = database.folders.get( folderIndex ).getUnPackSize();
+                extractFolderInfoVector.add( efi );
+            }
+            catch ( IOException IO ) { IO.printStackTrace(); }
+
+            var efi = extractFolderInfoVector.last();
+            int targetIndex = ref2Index - database.FolderStartFileIndex.get( folderIndex );
+
+            for ( int index = efi.ExtractStatuses.size(); index <= targetIndex; index++ )
+            {
+                efi.ExtractStatuses.add( index == targetIndex );
+            }
+        }
+
+        // Sort the folders in descending order of size
+        Collections.sort( extractFolderInfoVector, (a,b) -> -1 * Long.compare( a.UnPackSize, b.UnPackSize ) );
+
+        return extractFolderInfoVector;
+    }
+
+
+    private void extract( ExtractFolderInfo efi, IArchiveExtractCallback extractCallbackSpec )
+    {
+        try ( var srcStream = streamSupplier.get() )
+        {
+            var folderOutStream = new FolderOutStream();
+            var startIndex = database.FolderStartFileIndex.get( efi.FolderIndex );
+            folderOutStream.init( this, database, 0, startIndex, efi.ExtractStatuses, extractCallbackSpec );
+
+            var packStreamIndex = database.FolderStartPackStreamIndex.get( efi.FolderIndex );
+            var folderStartPackPos = database.getFolderStreamPos( efi.FolderIndex, 0 );
+            var folderInfo = database.folders.get( efi.FolderIndex );
+
+            var result = new Decoder().decode
+            (
+                srcStream, folderStartPackPos, database.packSizes,
+                packStreamIndex, folderInfo, folderOutStream
+            );
+
+            switch ( result )
+            {
+                case ERROR_NOT_IMPLEMENTED : folderOutStream.flushCorrupted( OperationResult.UNSUPPORTED_METHOD ); break;
+                case FALSE : folderOutStream.flushCorrupted( OperationResult.DATA_ERROR ); break;
+                case OK : if ( folderOutStream.wasWritingFinished() != Result.OK )
+                {
+                    folderOutStream.flushCorrupted( OperationResult.DATA_ERROR );
+                }
+            }
+        }
+        catch ( Exception EX )
+        {
+            EX.printStackTrace();
+        }
+    }
+
 
     public Result extract(int[] indices, IArchiveExtractCallback extractCallbackSpec) throws IOException {
         int numItems = (indices == null ? database.files.size() : indices.length);
