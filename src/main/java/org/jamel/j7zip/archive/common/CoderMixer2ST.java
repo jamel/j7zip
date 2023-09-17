@@ -161,7 +161,7 @@ public class CoderMixer2ST implements ICompressCoder2, CoderMixer2 {
             }
 
             CoderInfo coder = coders.get(i);
-            if (coder instanceof ICompressSetOutStreamSize) {
+            if (coder.Coder instanceof ICompressSetOutStreamSize) {
                 ICompressSetOutStreamSize setOutStreamSize = (ICompressSetOutStreamSize) coder.Coder;
                 setOutStreamSize.setOutStreamSize(coder.OutSizePointers.get(0));
             }
