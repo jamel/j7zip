@@ -3,6 +3,7 @@ package org.jamel.j7zip;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.file.Files;
 
 import org.jamel.j7zip.archive.IArchiveExtractCallback;
 import org.jamel.j7zip.archive.IInArchive;
@@ -68,6 +69,7 @@ public class ArchiveExtractCallback implements IArchiveExtractCallback {
                 throw new IOException("can't create directory " + file);
             }
         }
+        else Files.createDirectories( file.getParentFile().toPath() );
 
         long pos = item.getPosition();
         if (pos == -1 && file.exists()) file.delete();
